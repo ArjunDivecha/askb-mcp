@@ -1,0 +1,15 @@
+# Runtime recipe cache (machine/user-specific; may contain queried values)
+bloomberg_knowledge/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs / screenshots / scratch
+*.log
+*.png
+
+# macOS metadata
+._*
+.DS_Store
