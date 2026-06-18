@@ -124,6 +124,20 @@ function Hide-Terminals {
   } | ForEach-Object { [U]::ShowWindow($_.MainWindowHandle, 6) | Out-Null }   # SW_MINIMIZE
 }
 
+function Get-MainBloombergTab {
+  # The main Bloomberg terminal tab hosts the command line. It is a bplus64 window
+  # whose title is NOT the ASKB standalone ("ASKB (Beta)"); prefer one mentioning
+  # "Bloomberg". Returns {Handle, L, T, W, H, Title} or $null.
+  $cands = Get-Process -Name bplus64 -ErrorAction SilentlyContinue | Where-Object {
+    $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -and $_.MainWindowTitle -ne 'ASKB (Beta)'
+  }
+  $pick = $cands | Where-Object { $_.MainWindowTitle -like '*loomberg*' } | Select-Object -First 1
+  if (-not $pick) { $pick = $cands | Select-Object -First 1 }
+  if (-not $pick) { return $null }
+  $r = New-Object U+RECT; [U]::GetWindowRect($pick.MainWindowHandle, [ref]$r) | Out-Null
+  [pscustomobject]@{ Handle=$pick.MainWindowHandle; L=$r.L; T=$r.T; W=($r.R-$r.L); H=($r.B-$r.T); Title=$pick.MainWindowTitle }
+}
+
 function Invoke-EnsureAskb {
   $s = Get-BloombergStatus
   if (-not $s.bloomberg_running) {
@@ -137,39 +151,50 @@ function Invoke-EnsureAskb {
   if ($s.askb_open) {
     return [pscustomobject]@{ ok=$true; bloomberg=$true; askb='already_open'; window=$s.askb }
   }
-  if ($s.terminal_panels -eq 0) {
+  $tab = Get-MainBloombergTab
+  if (-not $tab) {
     return [pscustomobject]@{ ok=$false; bloomberg=$true; need='manual'
-      message='Bloomberg is running but no command panel was found to type into. Open a Bloomberg panel (or run ASKB <GO>) manually, then retry.' }
+      message='Bloomberg is running but the main command window was not found. Open a Bloomberg panel (or run ASKB <GO>) manually, then retry.' }
   }
-  # Launch ASKB by typing into the first Terminal command panel. ASKB only spawns
-  # its separate chat window on a FRESH navigation; if the panel is already on ASKB
-  # (e.g. the chat was closed but the function stayed loaded), re-typing ASKB is a
-  # no-op — so on the fallback we navigate away (HELP) and back to force a fresh load.
-  # Prefer the primary command panel "1-BLOOMBERG" (class BLPFrameWClass); the
-  # enumeration order of panels is not 1..6, so don't just take panels[0].
-  $panelObj = $s.panels | Where-Object { $_.Title -eq '1-BLOOMBERG' -or $_.Class -eq 'BLPFrameWClass' } | Select-Object -First 1
-  if (-not $panelObj) { $panelObj = $s.panels[0] }
-  $panel = [IntPtr]($panelObj.Handle)
-  $focus = { [U]::ShowWindow($panel,5)|Out-Null; [U]::ShowWindow($panel,9)|Out-Null; [U]::SetForegroundWindow($panel)|Out-Null; Start-Sleep -Milliseconds 800 }
-  $go    = { param($cmd) [System.Windows.Forms.SendKeys]::SendWait($cmd); Start-Sleep -Milliseconds 350; [System.Windows.Forms.SendKeys]::SendWait("{ENTER}") }
-  $poll  = { param($secs) $dl=(Get-Date).AddSeconds($secs); while((Get-Date) -lt $dl){ Start-Sleep -Milliseconds 1200; try { $w = Get-AskbWindow; if ($w) { return $w } } catch {} }; return $null }
+  # Launch ASKB by PHYSICALLY CLICKING the Bloomberg command line, then typing ASKB<GO>.
+  # SetForegroundWindow + SendKeys does NOT reliably focus Bloomberg's command-line
+  # control (Bloomberg uses a dual wintrv/bplus64 window model); a real mouse click
+  # does. ASKB only spawns its separate chat window on a FRESH navigation, so the
+  # fallback navigates away (HELP) and back. Command line sits ~90px,93px from the
+  # tab's top-left (below the title bar + green function-button row).
+  $clickX = $tab.L + 90
+  $clickY = $tab.T + 93
+  $click = {
+    [U]::ShowWindow($tab.Handle, 5) | Out-Null
+    [U]::ShowWindow($tab.Handle, 9) | Out-Null
+    [U]::SetForegroundWindow($tab.Handle) | Out-Null
+    Start-Sleep -Milliseconds 400
+    [void][U]::SetCursorPos($clickX, $clickY); Start-Sleep -Milliseconds 250
+    [U]::mouse_event(0x02,0,0,0,0); [U]::mouse_event(0x04,0,0,0,0); Start-Sleep -Milliseconds 450
+  }
+  $cmd  = { param($c)
+    [System.Windows.Forms.SendKeys]::SendWait("{ESC}"); Start-Sleep -Milliseconds 250
+    [System.Windows.Forms.SendKeys]::SendWait($c);      Start-Sleep -Milliseconds 400
+    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+  }
+  $poll = { param($secs) $dl=(Get-Date).AddSeconds($secs); while((Get-Date) -lt $dl){ Start-Sleep -Milliseconds 1200; try { $w = Get-AskbWindow; if ($w) { return $w } } catch {} }; return $null }
 
-  & $focus; & $go "ASKB"
-  $w = & $poll 8
+  & $click; & $cmd "ASKB"
+  $w = & $poll 10
   if (-not $w) {
-    & $focus; & $go "HELP"; Start-Sleep -Seconds 3     # force a fresh navigation
-    & $focus; & $go "ASKB"
+    & $click; & $cmd "HELP"; Start-Sleep -Seconds 3     # force a fresh navigation
+    & $click; & $cmd "ASKB"
     $w = & $poll $LaunchWaitSeconds
   }
   if ($w) { return [pscustomobject]@{ ok=$true; bloomberg=$true; askb='launched'; window=$w } }
   return [pscustomobject]@{ ok=$false; bloomberg=$true; need='manual'
-    message='Tried to launch ASKB (typed ASKB <GO>) but the chat window did not appear. Please open ASKB manually and retry.' }
+    message='Tried to launch ASKB by typing ASKB <GO> into the Bloomberg command line, but the chat window did not appear. Please open ASKB manually and retry.' }
 }
 
 function Click-Rel($win, $fx, $fy) {
   $x = $win.L + [int]($win.W * $fx)
   $y = $win.T + [int]($win.H * $fy)
-  [U]::SetCursorPos($x, $y); Start-Sleep -Milliseconds 150
+  [void][U]::SetCursorPos($x, $y); Start-Sleep -Milliseconds 150
   [U]::mouse_event(0x02,0,0,0,0); [U]::mouse_event(0x04,0,0,0,0)
   Start-Sleep -Milliseconds 300
 }
@@ -177,7 +202,7 @@ function Click-Rel($win, $fx, $fy) {
 function Scroll-Chat($win, $total) {
   $notch = 120
   $count = [int]([math]::Abs($total) / $notch); if ($count -lt 1) { $count = 1 }
-  [U]::SetCursorPos(($win.L + [int]($win.W*0.5)), ($win.T + [int]($win.H*0.4)))
+  [void][U]::SetCursorPos(($win.L + [int]($win.W*0.5)), ($win.T + [int]($win.H*0.4)))
   Start-Sleep -Milliseconds 150
   for ($i=0; $i -lt $count; $i++) {
     $d = if ($total -lt 0) { [uint32](4294967296 - $notch) } else { [uint32]$notch }

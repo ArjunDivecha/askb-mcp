@@ -42,9 +42,11 @@ does **not** need to be open — the skill launches it. Always start with
 1. Checks the Terminal is running. If not → returns a friendly message asking the
    user to open and log into Bloomberg (it does **not** fail hard).
 2. Checks for the login screen. If present → asks the user to log in.
-3. Checks for the ASKB chat window. If missing → **launches it by typing `ASKB<GO>`
-   into the `1-BLOOMBERG` command panel** (with a `HELP`→`ASKB` refresh fallback,
-   since ASKB only spawns its separate window on a fresh navigation), then waits.
+3. Checks for the ASKB chat window. If missing → **launches it by physically
+   clicking the Bloomberg command line and typing `ASKB<GO>`** (with a `HELP`→`ASKB`
+   refresh fallback, since ASKB only spawns its separate window on a fresh
+   navigation), then waits. A physical click is required because
+   `SetForegroundWindow`+`SendKeys` does not reliably focus Bloomberg's command line.
 4. If everything is ready (or once ASKB launches) → returns `{ok:true, ...}`.
 
 Only proceed to send a prompt when `ensure` returns `ok:true`. Otherwise relay its
@@ -92,8 +94,10 @@ the script explicitly skips it.
 The Bloomberg Terminal is the `wintrv` process; its command panels are windows of
 class `BLPFrameWClass`/`BLPFrame{1..5}WClass` titled `1-BLOOMBERG`…`6-BLOOMBERG`.
 "Bloomberg is open" = `wintrv` running with these panels. A visible
-`BLOOMBERG: Login` window = not logged in. ASKB is launched by focusing the
-`1-BLOOMBERG` panel and typing `ASKB<GO>`.
+`BLOOMBERG: Login` window = not logged in. To launch ASKB, the script finds the
+main Bloomberg tab (a `bplus64` window whose title isn't the `ASKB (Beta)`
+standalone), physically clicks its command line (~90px,93px from the tab's
+top-left), and types `ASKB<GO>`.
 
 ## Workflow
 
